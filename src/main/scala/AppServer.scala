@@ -1,33 +1,75 @@
-import akka.actor.ActorSystem
+import akka.actor.{ActorRef, ActorSystem}
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model._
+import akka.http.scaladsl.model.{HttpEntity, _}
 import akka.http.scaladsl.server.Directives._
 import akka.stream.ActorMaterializer
+import common.Uuid
+import dao.FlatFile
 
+import scala.collection.mutable
 import scala.io.{Source, StdIn}
 
-object AppServer extends  App {
+object AppServer extends App with Uuid {
   implicit val system = ActorSystem("my-system")
   implicit val materializer = ActorMaterializer()
   implicit val executionContext = system.dispatcher
-  val helloActorRef = system.actorOf(mapreduce.AppManager.props,"hello-actor")
 
-  lazy val homepage =  Source.fromFile("/assets/submit_job.html").toString()
+  val mrManger = system.actorOf(mapreduce.AppManager.props, "mr-manager")
+  var mrJobs = Map.empty[String, Boolean]
+
+  val home = System.getProperty("user.home")
+  lazy val homepage =
+    Source.fromFile(s"${home}/Stuff/git/MapReduce-Akka/src/assets/submit_job.html").getLines().mkString("\n")
+
   val route =
     path("submitTask") {
       get {
-        helloActorRef ! "say Z"
-
-        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,homepage))
+        mrManger ! "map reduce manager alive"
+        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, homepage))
       }
 
     } ~
     post {
       path("submitTask") {
-        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, "<h2>Home</h2>"))
+        entity(as[(String)]) { payload =>
+          submitMR(payload)
+          complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, "<h2>Submitted</h2>"))
+        }
+      }
+    } ~
+    get {
+      pathPrefix("getTaskStatus" ) {
+        path(Segment) { name =>
+          val status = getJobProgress(name)
+          complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, s"{ $name : $status }"))
+        }
+      }
+    } ~
+    get {
+      path("getTasksStatus" ) {
+
+        val jobs_status = mrJobs.keys.map((job) => {
+          val status = getJobProgress(job)
+          s"$job => $status"
+        }).mkString("<br/>")
+        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, jobs_status))
+
       }
     }
 
+  def submitMR(payload: String) = {
+    val parameters = payload.split('&').map(_.split('='))
+    val job = parameters(0)(1)
+    val data = parameters(1)(1)
+    mrJobs += job -> false
+    mrManger ! FlatFile(uuid(), data)
+  }
+
+  def getJobProgress(job:String): String =
+    mrJobs.get(job) match {
+      case Some(value) => if(value) "Success" else  "In Progress"
+      case None => "Not Found"
+    }
 
   val bindingFuture = Http().bindAndHandle(route, "localhost", 8080)
 

@@ -1,25 +1,35 @@
 package mapreduce
 
-import akka.actor.{Actor, Props}
+import akka.actor.{Actor, ActorLogging, Props}
 import dao.{Data, HealthCheck, MapFile}
-import java.util.UUID.randomUUID
+import common.Uuid
 
-object MapActor {
+
+object MapActor{
   def props(id:String): Props =
     Props(new MapActor(id))
 }
 
-class MapActor(id:String) extends Actor {
-  var data: List[(String, Int)] = List()
+class MapActor(id:String)
+  extends Actor
+    with Uuid
+    with ActorLogging{
+  type K = List[(String,Int)]
+
 
   override def receive: Receive = {
     case Data(_, input) =>
-      data = Map.map(input)
-      sender() ! data
+      val data =  Map.map(input)
+      log.info(s"sending proceessed data to ${sender()}")
+      sender() ! wrapData(data)
     case HealthCheck(requestId) => requestId
   }
 
+  def wrapData(data: K) = {
+    MapFile(uuid(),data)
+  }
   def healthCheck() = s"i'm healthy $id"
+  def getId = id
 }
 
 
