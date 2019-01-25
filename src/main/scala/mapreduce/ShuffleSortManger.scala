@@ -1,61 +1,71 @@
-//package mapreduce
-//
-//import akka.actor.{Actor, ActorRef, Props}
-//import dao.{Data, FlatFile, MapFile, ShuffleInput,ShuffleOutput}
-//
-//import scala.collection.mutable
-//import java.util.UUID.randomUUID
-//
-//import scala.concurrent.duration._
-//import scala.collection.mutable.ArrayBuffer
-//
-//object MapManger {
-//  def props: Props =
-//    Props(new MapManger)
-//}
-//
-//class ShuffleSortManger(shuffleSortCount: Int = 2) extends Actor{
-//  var files = new mutable.Queue[List[(String,Int)]]
-//  var busyShufflePool = new mutable.Queue[ActorRef]
-//  var freeShufflePool = new mutable.Queue[ActorRef]
-//  var mapFinished = false
-//
-//  override def preStart(): Unit = {
-//    launchShuffleSorts()
-//    context.system.scheduler.scheduleOnce(30 seconds,self,"shuffle sort")
-//  }
-//
-//  override def receive: Receive = {
-//    case "shuffle sort" =>
-//      if (files.size > 1 && freeShufflePool.nonEmpty){
-//        val shuffle = freeShufflePool.dequeue()
-//        busyShufflePool.enqueue(shuffle)
-//        shuffle ! ShuffleInput(uuid, files.dequeue(),files.dequeue())
-//      } else if(mapFinished && files.size == 1) {
-//        context.parent ! files.head
-//      }
-//
-//    case shuffleFile @ ShuffleOutput(_,_) =>
-//      files enqueue  shuffleFile.output
-//
-//    case _ : ActorRef =>
-//      freeShufflePool.enqueue(_)
-//
-//    case mapFile @ MapFile(_,_) =>
-//      files.enqueue(mapFile.output)
-//      if (files.size > 1) self !  "shuffle sort"
-//
-//    case "map finished" =>   mapFinished = true
-//
-//  }
-//
-//  def uuid :String = randomUUID().toString
-//
-//  def launchShuffleSorts() = {
-//    for (i <- 0 to shuffleSortCount) {
-//      val actorRef = context.actorOf(MapActor.props(uuid),s"map-${uuid}")
-//      freeMapPool +=  actorRef
-//    }
-//  }
-//
-//}
+package mapreduce
+
+import akka.actor.{Actor, ActorRef, Props}
+import dao.{MapFile, Output}
+
+import scala.collection.mutable
+import common.Uuid
+import mapreduce.ShuffleSortManger.{PerformShuffleSort, ShuffleInput, ShuffleOutput}
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
+
+object ShuffleSortManger {
+  def props: Props =
+    Props(new ShuffleSortManger)
+
+  final case class ShuffleInput(requestId: String, input1 : List[(String,Int)], input2 : List[(String,Int)] )
+  final case class ShuffleOutput(requestId: String, output: List[(String,Int)])
+  final case class PerformShuffleSort(requestId: String)
+
+}
+
+class ShuffleSortManger(shuffleSortCount: Int = 2)
+  extends Actor
+    with Uuid{
+  var files = new mutable.Queue[List[(String,Int)]]
+
+  var busyMapPool = mutable.Map.empty[String, ActorRef]
+  var freeMapPool = mutable.Map.empty[String, ActorRef]
+
+  def mapFinished = files.size == 1 && busyMapPool.isEmpty
+
+  implicit val ec = ExecutionContext.global
+
+  override def preStart(): Unit = {
+    launchShuffleSorts()
+    context.system.scheduler.scheduleOnce(2 seconds, self, PerformShuffleSort(uuid))
+  }
+
+  override def receive: Receive = {
+    case PerformShuffleSort(id) =>
+      if (files.size > 1 && freeMapPool.nonEmpty){
+        val (id,actor) = freeMapPool.head
+        freeMapPool -= id
+        freeMapPool += id -> actor
+        actor ! ShuffleInput(uuid, files.dequeue(),files.dequeue())
+      } else if(mapFinished) {
+        context.parent ! ShuffleOutput(uuid,files.head)
+      }
+
+    case shuffleFile @ ShuffleOutput(_,_) =>
+      files enqueue  shuffleFile.output
+
+    case mapFile @ MapFile(_,_) =>
+      files.enqueue(mapFile.output)
+      if (files.size > 1) self ! PerformShuffleSort(uuid)
+
+    case output @ Output(_,_) => context.parent ! output
+
+  }
+
+
+  def launchShuffleSorts() = {
+    for (i <- 0 to shuffleSortCount) {
+      val id = uuid
+      val actorRef = context.actorOf(ShuffleSortActor.props(id),s"shufflesort-${id}")
+      freeMapPool +=  id -> actorRef
+    }
+  }
+
+}

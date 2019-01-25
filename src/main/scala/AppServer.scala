@@ -6,17 +6,23 @@ import akka.stream.ActorMaterializer
 import common.Uuid
 import dao.FlatFile
 
-import scala.collection.mutable
-import scala.io.{Source, StdIn}
+import scala.concurrent.duration._
+import akka.util.Timeout
+import akka.pattern.ask
 
+import scala.io.{Source, StdIn}
+import mapreduce.AppManager
+
+import scala.concurrent.Await
 object AppServer extends App with Uuid {
   implicit val system = ActorSystem("my-system")
   implicit val materializer = ActorMaterializer()
   implicit val executionContext = system.dispatcher
 
-  val mrManger = system.actorOf(mapreduce.AppManager.props, "mr-manager")
+  val mrManger  = system.actorOf(AppManager.props, "mr-manager")
   var mrJobs = Map.empty[String, Boolean]
 
+  implicit val timeout = Timeout(5 seconds)
   val home = System.getProperty("user.home")
   lazy val homepage =
     Source.fromFile(s"${home}/Stuff/git/MapReduce-Akka/src/assets/submit_job.html").getLines().mkString("\n")
@@ -47,7 +53,6 @@ object AppServer extends App with Uuid {
     } ~
     get {
       path("getTasksStatus" ) {
-
         val jobs_status = mrJobs.keys.map((job) => {
           val status = getJobProgress(job)
           s"$job => $status"
@@ -67,7 +72,11 @@ object AppServer extends App with Uuid {
 
   def getJobProgress(job:String): String =
     mrJobs.get(job) match {
-      case Some(value) => if(value) "Success" else  "In Progress"
+      case Some(_) =>
+//        val f = mrManger ? "send output"
+//        Await.result(f,1 second).toString
+        "In Progress"
+
       case None => "Not Found"
     }
 
